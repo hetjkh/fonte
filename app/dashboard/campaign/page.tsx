@@ -308,6 +308,8 @@ export default function CreateCampaignPage() {
       if (result.status) {
         showToast('Campaign created successfully!', 'success');
         setCampaignId(result.campaignId);
+        // Store campaignId in localStorage for ScheduleCampaign component
+        localStorage.setItem('currentCampaignId', result.campaignId);
       } else {
         showToast(result.message || 'Failed to create campaign', 'error');
       }
@@ -328,6 +330,8 @@ export default function CreateCampaignPage() {
     setDelayRange({ start: 3, end: 5 });
     setAntdContacts([]);
     setCampaignId(null);
+    // Clean up localStorage
+    localStorage.removeItem('currentCampaignId');
     setRecipients([{
       phone: '',
       name: '',

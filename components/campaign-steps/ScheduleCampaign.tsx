@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Send, Loader2, CheckCircle } from 'lucide-react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 interface ScheduleCampaignProps {
   campaignName: string;
@@ -32,6 +32,7 @@ export default function ScheduleCampaign({
 }: ScheduleCampaignProps) {
   const [showSuccessPopup, setShowSuccessPopup] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   const handleCreateCampaign = async () => {
     await onCreateCampaign();
@@ -40,15 +41,24 @@ export default function ScheduleCampaign({
 
   const handleSendCampaign = async () => {
     setIsSending(true);
+    setErrorMessage('');
+    
     try {
       const token = document.cookie
         .split('; ')
         .find(row => row.startsWith('token='))
         ?.split('=')[1] || localStorage.getItem('token');
-      if (!token) throw new Error('Authentication required');
-      // Get campaignId from localStorage or props
+      
+      if (!token) {
+        throw new Error('Authentication required');
+      }
+      
+      // Get campaignId from localStorage
       const campaignId = localStorage.getItem('currentCampaignId');
-      if (!campaignId) throw new Error('Campaign ID not found');
+      if (!campaignId) {
+        throw new Error('Campaign ID not found');
+      }
+      
       const response = await fetch('https://whatsapp.recuperafly.com/api/campaign/send', {
         method: 'POST',
         headers: {
@@ -57,14 +67,22 @@ export default function ScheduleCampaign({
         },
         body: JSON.stringify({ campaignId }),
       });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const result = await response.json();
       if (result.status) {
-        window.location.href = '/dashboard/messaging';
+        // Redirect to the campaign [id] page instead of messaging dashboard
+        window.location.href = `/dashboard/campaign/final/${campaignId}`;
       } else {
         throw new Error(result.message || 'Failed to send campaign');
       }
     } catch (error) {
-      alert('Failed to send campaign. Please try again.');
+      console.error('Error sending campaign:', error);
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to send campaign. Please try again.');
     } finally {
       setIsSending(false);
     }
@@ -169,19 +187,33 @@ export default function ScheduleCampaign({
             <DialogTitle className="text-xl font-semibold text-center">
               Campaign Created Successfully!
             </DialogTitle>
+            <DialogDescription className="text-center text-zinc-300">
+              Your campaign "{campaignName}" has been created successfully. 
+              Would you like to start sending messages now?
+            </DialogDescription>
           </DialogHeader>
           <div className="text-center py-6">
             <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-4" />
-            <p className="text-zinc-300 mb-6">
-              Your campaign "{campaignName}" has been created successfully. 
-              Would you like to start sending messages now?
-            </p>
+            
+            {/* Error Message Display */}
+            {errorMessage && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 mb-4">
+                <p className="text-red-400 text-sm">{errorMessage}</p>
+              </div>
+            )}
+            
             <div className="flex gap-3 justify-center">
               <Button
                 variant="outline"
                 onClick={() => {
                   setShowSuccessPopup(false);
-                  window.location.href = '/dashboard/messaging';
+                  // Redirect to the campaign [id] page instead of messaging dashboard
+                  const campaignId = localStorage.getItem('currentCampaignId');
+                  if (campaignId) {
+                    window.location.href = `/dashboard/campaign/final/${campaignId}`;
+                  } else {
+                    window.location.href = '/dashboard/messaging';
+                  }
                 }}
                 className="bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700"
               >
