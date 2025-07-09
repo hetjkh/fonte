@@ -6,7 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Eye, Trash2, Loader2, CheckCircle, XCircle, Clock, RefreshCw, StopCircle, Pause, Play } from 'lucide-react';
 import { memo, useEffect, useState, useCallback } from 'react';
-import { useSocket } from "../hooks/useSocket";
 import Cookies from 'js-cookie';
 
 interface Campaign {
@@ -17,7 +16,7 @@ interface Campaign {
     name: string;
     messageType: string;
   };
-  instances: any[];
+  instanceCount: number;
   recipients: any[];
   status: 'completed' | 'failed' | 'processing' | 'paused' | 'stopped';
   totalMessages: number;
@@ -38,9 +37,10 @@ interface CampaignTableProps {
 const CAMPAIGN_STATUS = {
   completed: { label: 'Completed', color: 'bg-green-500', icon: CheckCircle },
   failed: { label: 'Failed', color: 'bg-red-500', icon: XCircle },
+  pending: { label: 'Pending', color: 'bg-gray-500', icon: Clock },
   processing: { label: 'Processing', color: 'bg-blue-500', icon: Clock },
   paused: { label: 'Paused', color: 'bg-yellow-500', icon: Pause },
-  stopped: { label: 'Stopped', color: 'bg-red-500', icon: StopCircle }
+  stop: { label: 'Stopped', color: 'bg-red-500', icon: StopCircle },
 };
 
 // Memoized row component to prevent unnecessary re-renders
@@ -57,133 +57,7 @@ const CampaignRow = memo(({
   onDelete: (campaignId: string) => void;
   onCampaignUpdate?: (updatedCampaign: Campaign) => void;
 }) => {
-  const [localCampaign, setLocalCampaign] = useState<Campaign>(campaign);
   const [isControlling, setIsControlling] = useState(false);
-
-  // Get token for socket connection
-  const getToken = (): string | null => {
-    const cookieToken = Cookies.get('token');
-    if (cookieToken) return cookieToken;
-    return localStorage.getItem('token');
-  };
-
-  const token = getToken();
-
-  // Socket connection for real-time updates
-  const { on, off, isConnected } = useSocket({
-    token,
-    onConnect: () => {
-      console.log('Socket connected for campaign row');
-    },
-    onDisconnect: () => {
-      console.log('Socket disconnected');
-    },
-    onError: (error) => {
-      console.error('Socket error:', error);
-    }
-  });
-
-  // Update local campaign when prop changes
-  useEffect(() => {
-    setLocalCampaign(campaign);
-  }, [campaign]);
-
-  // Listen for real-time campaign updates
-  useEffect(() => {
-    if (!isConnected) return;
-
-    const handleCampaignProgress = (data: any) => {
-      if (data.campaignId !== localCampaign._id) return;
-
-      console.log('Campaign progress update for row:', data);
-
-      const updatedCampaign = {
-        ...localCampaign,
-        status: data.status,
-        sentMessages: data.sent || 0,
-        failedMessages: data.failed || 0,
-        totalMessages: data.total || localCampaign.totalMessages
-      };
-
-      setLocalCampaign(updatedCampaign);
-      onCampaignUpdate?.(updatedCampaign);
-    };
-
-    const handleCampaignComplete = (data: any) => {
-      if (data.campaignId !== localCampaign._id) return;
-
-      console.log('Campaign completed for row:', data);
-
-      const updatedCampaign = {
-        ...localCampaign,
-        status: 'completed' as const,
-        sentMessages: data.sent || 0,
-        failedMessages: data.failed || 0
-      };
-
-      setLocalCampaign(updatedCampaign);
-      onCampaignUpdate?.(updatedCampaign);
-    };
-
-    const handleCampaignStopped = (data: any) => {
-      if (data.campaignId !== localCampaign._id) return;
-
-      console.log('Campaign stopped for row:', data);
-
-      const updatedCampaign = {
-        ...localCampaign,
-        status: 'stopped' as const
-      };
-
-      setLocalCampaign(updatedCampaign);
-      onCampaignUpdate?.(updatedCampaign);
-      setIsControlling(false);
-    };
-
-    const handleCampaignPaused = (data: any) => {
-      if (data.campaignId !== localCampaign._id) return;
-
-      console.log('Campaign paused for row:', data);
-
-      const updatedCampaign = {
-        ...localCampaign,
-        status: 'paused' as const
-      };
-
-      setLocalCampaign(updatedCampaign);
-      onCampaignUpdate?.(updatedCampaign);
-      setIsControlling(false);
-    };
-
-    const handleCampaignResumed = (data: any) => {
-      if (data.campaignId !== localCampaign._id) return;
-
-      console.log('Campaign resumed for row:', data);
-
-      const updatedCampaign = {
-        ...localCampaign,
-        status: 'processing' as const
-      };
-
-      setLocalCampaign(updatedCampaign);
-      onCampaignUpdate?.(updatedCampaign);
-      setIsControlling(false);
-    };
-
-    on('campaign.progress', handleCampaignProgress);
-    on('campaign.complete', handleCampaignComplete);
-    on('campaign.stopped', handleCampaignStopped);
-    on('campaign.paused', handleCampaignPaused);
-    on('campaign.resumed', handleCampaignResumed);
-
-    return () => {
-      off('campaign.progress', handleCampaignProgress);
-      off('campaign.complete', handleCampaignComplete);
-      off('campaign.stopped', handleCampaignStopped);
-      off('campaign.paused', handleCampaignPaused);
-      off('campaign.resumed', handleCampaignResumed);
-    };
-  }, [isConnected, localCampaign._id, on, off, onCampaignUpdate]);
 
   // Campaign control function
   const handleCampaignControl = useCallback(async (action: 'stop' | 'pause' | 'resume') => {
@@ -201,40 +75,44 @@ const CampaignRow = memo(({
       newStatus = 'processing';
     }
     
-    const updatedCampaign = { ...localCampaign, status: newStatus };
-    setLocalCampaign(updatedCampaign);
+    const updatedCampaign = { ...campaign, status: newStatus };
     onCampaignUpdate?.(updatedCampaign);
 
     try {
-      const authToken = getToken();
-      const response = await fetch('https://whatsapp.recuperafly.com/api/template/campaign/control', {
+      const authToken = Cookies.get('token') || localStorage.getItem('token');
+      let endpoint = '';
+      if (action === 'pause') {
+        endpoint = 'https://whatsapp.recuperafly.com/api/campaign/pause';
+      } else if (action === 'stop') {
+        endpoint = 'https://whatsapp.recuperafly.com/api/campaign/stop';
+      } else if (action === 'resume') {
+        endpoint = 'https://whatsapp.recuperafly.com/api/campaign/resume';
+      } else {
+        endpoint = 'https://whatsapp.recuperafly.com/api/template/campaign/control';
+      }
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          campaignId: localCampaign._id,
-          action,
-        }),
+        body: JSON.stringify({ campaignId: campaign._id }),
       });
 
       const result = await response.json();
       if (!result.status) {
         // Revert on failure
-        setLocalCampaign(localCampaign);
-        onCampaignUpdate?.(localCampaign);
+        onCampaignUpdate?.(campaign);
         console.error(`Campaign ${action} failed:`, result.message);
       }
     } catch (error) {
       // Revert on error
-      setLocalCampaign(localCampaign);
-      onCampaignUpdate?.(localCampaign);
+      onCampaignUpdate?.(campaign);
       console.error(`Error ${action}ing campaign:`, error);
     } finally {
       setIsControlling(false);
     }
-  }, [localCampaign, isControlling, getToken, onCampaignUpdate]);
+  }, [campaign, isControlling, onCampaignUpdate]);
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -247,9 +125,13 @@ const CampaignRow = memo(({
   };
 
   const getStatusBadge = (status: string) => {
+    // Always show a badge for any known status
     const statusInfo = CAMPAIGN_STATUS[status as keyof typeof CAMPAIGN_STATUS];
-    if (!statusInfo) return null;
-    
+    if (!statusInfo) return (
+      <Badge className="bg-zinc-700 text-white flex items-center gap-1">
+        {status}
+      </Badge>
+    );
     const Icon = statusInfo.icon;
     return (
       <div className="flex items-center gap-2">
@@ -358,40 +240,40 @@ const CampaignRow = memo(({
   };
 
   const getProgressPercentage = () => {
-    if (localCampaign.totalMessages === 0) return 0;
-    return Math.round(((localCampaign.sentMessages + localCampaign.failedMessages) / localCampaign.totalMessages) * 100);
+    if (campaign.totalMessages === 0) return 0;
+    return Math.round(((campaign.sentMessages + campaign.failedMessages) / campaign.totalMessages) * 100);
   };
 
   return (
     <TableRow className="border-zinc-800 hover:bg-zinc-800/30 transition-colors">
       <TableCell>
         <div>
-          <p className="text-zinc-200 font-medium truncate max-w-[200px]" title={localCampaign.name}>
-            {localCampaign.name}
+          <p className="text-zinc-200 font-medium truncate max-w-[200px]" title={campaign.name}>
+            {campaign.name}
           </p>
-          <p className="text-zinc-400 text-xs">ID: {localCampaign._id.slice(-8)}</p>
+          <p className="text-zinc-400 text-xs">ID: {campaign._id.slice(-8)}</p>
         </div>
       </TableCell>
       <TableCell>
         <div>
-          <p className="text-zinc-200 truncate max-w-[150px]" title={localCampaign.template.name}>
-            {localCampaign.template.name}
+          <p className="text-zinc-200 truncate max-w-[150px]" title={campaign.template.name}>
+            {campaign.template.name}
           </p>
-          <p className="text-zinc-400 text-xs">{localCampaign.template.messageType}</p>
+          <p className="text-zinc-400 text-xs">{campaign.template.messageType}</p>
         </div>
       </TableCell>
-      <TableCell className="text-zinc-200">{localCampaign.instances.length}</TableCell>
+      <TableCell className="text-zinc-200">{campaign.instanceCount}</TableCell>
       <TableCell>
         <div className="flex flex-col gap-1">
-          {getStatusBadge(localCampaign.status)}
-          {localCampaign.status === 'processing' && (
+          {getStatusBadge(campaign.status)}
+          {campaign.status === 'processing' && (
             <div className="text-xs text-zinc-400">
-              {localCampaign.sentMessages}/{localCampaign.totalMessages} ({getProgressPercentage()}%)
+              {campaign.sentMessages}/{campaign.totalMessages} ({getProgressPercentage()}%)
             </div>
           )}
         </div>
       </TableCell>
-      <TableCell className="text-zinc-400 text-sm">{formatDate(localCampaign.createdAt)}</TableCell>
+      <TableCell className="text-zinc-400 text-sm">{formatDate(campaign.createdAt)}</TableCell>
       <TableCell>
         <div className="flex items-center gap-1">
           <TooltipProvider>
@@ -400,7 +282,7 @@ const CampaignRow = memo(({
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => onViewDetails(localCampaign)}
+                  onClick={() => onViewDetails(campaign)}
                   className="text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 h-8 w-8 p-0"
                 >
                   <Eye className="h-4 w-4" />
@@ -417,7 +299,7 @@ const CampaignRow = memo(({
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => onDelete(localCampaign._id)}
+                  onClick={() => onDelete(campaign._id)}
                   disabled={isDeleting}
                   className="text-zinc-400 hover:text-red-400 hover:bg-red-500/10 h-8 w-8 p-0"
                 >

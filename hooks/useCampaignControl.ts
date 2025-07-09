@@ -51,13 +51,19 @@ export const useCampaignControl = (
       }
 
       try {
-        const payload = {
-          campaignId: campaignData._id,
-          action,
-          ...(action === 'resume' && { delayRange }),
-        };
+        let endpoint = '';
+        if (action === 'pause') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/pause';
+        } else if (action === 'stop') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/stop';
+        } else if (action === 'resume') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/resume';
+        } else {
+          endpoint = 'https://whatsapp.recuperafly.com/api/template/campaign/control';
+        }
+        const payload = { campaignId: campaignData._id };
 
-        const response = await fetch('https://whatsapp.recuperafly.com/api/template/campaign/control', {
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,

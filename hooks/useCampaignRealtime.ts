@@ -100,19 +100,26 @@ export function useCampaignRealtime(campaignId: string) {
     const failedCount = campaign.statistics?.failed || campaign.failedMessages || 0;
     const notExistCount = campaign.statistics?.notExist || campaign.notExistMessages || 0;
     let index = 0;
+    
+    // First, mark sent/failed/not_exist recipients
     for (let i = 0; i < sentCount && index < statuses.length; i++, index++) statuses[index] = 'sent';
     for (let i = 0; i < failedCount && index < statuses.length; i++, index++) statuses[index] = 'failed';
     for (let i = 0; i < notExistCount && index < statuses.length; i++, index++) statuses[index] = 'not_exist';
+    
+    // Check individual recipient statuses from backend
+    campaign.recipients.forEach((recipient: any, idx: number) => {
+      if (recipient.status && recipient.status !== 'pending') {
+        statuses[idx] = recipient.status === 'not_exist' ? 'not_exist' : recipient.status;
+      }
+    });
+    
+    // If campaign is stopped, mark all remaining pending recipients as stopped
     if (campaign.status === 'stopped') {
       for (let i = 0; i < statuses.length; i++) {
         if (statuses[i] === 'pending') statuses[i] = 'stopped';
       }
     }
-    campaign.recipients.forEach((recipient: any, idx: number) => {
-      if (recipient.status && recipient.status !== 'pending' && statuses[idx] !== 'stopped') {
-        statuses[idx] = recipient.status === 'not_exist' ? 'not_exist' : recipient.status;
-      }
-    });
+    
     return statuses;
   }, []);
 
@@ -241,9 +248,19 @@ export function useCampaignRealtime(campaignId: string) {
   const handleCampaignProgress = useCallback(
     (data: any) => {
       if (!campaign || data.campaignId !== campaign._id) return;
+
       const now = Date.now();
       if (now - lastProgressUpdateRef.current < 500) return;
       lastProgressUpdateRef.current = now;
+
+      console.log('Campaign progress update:', data);
+
+      // Ignore progress updates during control actions to prevent state conflicts
+      if (controlStates.isStopping || controlStates.isPausing || controlStates.isResuming) {
+        console.log('Ignoring progress update during control action');
+        return;
+      }
+
       setCampaign((prev: any) =>
         prev
           ? {
@@ -257,6 +274,7 @@ export function useCampaignRealtime(campaignId: string) {
             }
           : null
       );
+
       if (data.lastRecipient && data.lastMessageStatus && campaign) {
         const recipientIndex = campaign.recipients.findIndex(
           (r: any) => r.name === data.lastRecipient || r.phone === data.lastRecipient
@@ -269,6 +287,7 @@ export function useCampaignRealtime(campaignId: string) {
           });
         }
       }
+
       if (data.status === 'completed') {
         setIsProcessing(false);
         setIsPaused(false);
@@ -298,7 +317,7 @@ export function useCampaignRealtime(campaignId: string) {
         setControlStates({ isStopping: false, isPausing: false, isResuming: false });
       }
     },
-    [campaign, fetchCampaignDetails]
+    [campaign, fetchCampaignDetails, controlStates]
   );
 
   const handleCampaignComplete = useCallback(
@@ -456,12 +475,18 @@ export function useCampaignRealtime(campaignId: string) {
         const authToken = getToken();
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
-        const payload = {
-          campaignId: campaign._id,
-          action,
-          ...(action === 'resume' && { delayRange }),
-        };
-        const response = await fetch('https://whatsapp.recuperafly.com/api/template/campaign/control', {
+        let endpoint = '';
+        if (action === 'pause') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/pause';
+        } else if (action === 'stop') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/stop';
+        } else if (action === 'resume') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/resume';
+        } else {
+          endpoint = 'https://whatsapp.recuperafly.com/api/template/campaign/control';
+        }
+        const payload = { campaignId: campaign._id };
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${authToken}`,
@@ -476,6 +501,11 @@ export function useCampaignRealtime(campaignId: string) {
           if (action === 'resume') {
             setCampaign((prev: any) => prev ? { ...prev, delayRange } : null);
           }
+          
+          // Add a small delay to prevent immediate progress updates from overriding the state
+          setTimeout(() => {
+            setControlStates({ isStopping: false, isPausing: false, isResuming: false });
+          }, 1000);
         } else {
           // Revert UI state if server request failed
           if (action === 'stop') {
@@ -494,8 +524,10 @@ export function useCampaignRealtime(campaignId: string) {
             setIsStopped(false);
             setCampaign((prev: any) => (prev ? { ...prev, status: 'paused' } : null));
           }
+          setControlStates({ isStopping: false, isPausing: false, isResuming: false });
         }
       } catch (error) {
+        console.error(`Error ${action}ing campaign:`, error);
         // Revert UI state on error
         if (action === 'stop') {
           setIsProcessing(true);
@@ -513,7 +545,6 @@ export function useCampaignRealtime(campaignId: string) {
           setIsStopped(false);
           setCampaign((prev: any) => (prev ? { ...prev, status: 'paused' } : null));
         }
-      } finally {
         setControlStates({ isStopping: false, isPausing: false, isResuming: false });
       }
     },

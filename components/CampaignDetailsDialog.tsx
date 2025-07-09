@@ -286,13 +286,20 @@ export default function CampaignDetailsDialog({
   const updateRecipientStatuses = useCallback((campaign: Campaign) => {
     if (!campaign.recipients) return [];
   
+    console.log('updateRecipientStatuses called with campaign status:', campaign.status);
+    console.log('Campaign statistics:', campaign.statistics);
+    console.log('Campaign recipients:', campaign.recipients.length);
+  
     const statuses = new Array(campaign.recipients.length).fill('pending');
     const sentCount = campaign.statistics?.sent || campaign.sentMessages || 0;
     const failedCount = campaign.statistics?.failed || campaign.failedMessages || 0;
     const notExistCount = campaign.statistics?.notExist || campaign.notExistMessages || 0;
   
+    console.log('Counts - sent:', sentCount, 'failed:', failedCount, 'notExist:', notExistCount);
+  
     let index = 0;
   
+    // First, mark sent/failed/not_exist recipients
     for (let i = 0; i < sentCount && index < statuses.length; i++, index++) {
       statuses[index] = 'sent';
     }
@@ -305,7 +312,16 @@ export default function CampaignDetailsDialog({
       statuses[index] = 'not_exist';
     }
   
+    // Check individual recipient statuses from backend
+    campaign.recipients.forEach((recipient: any, idx: number) => {
+      if (recipient.status && recipient.status !== 'pending') {
+        statuses[idx] = recipient.status === 'not_exist' ? 'not_exist' : recipient.status;
+      }
+    });
+  
+    // If campaign is stopped, mark all remaining pending recipients as stopped
     if (campaign.status === 'stopped') {
+      console.log('Campaign is stopped, marking remaining pending recipients as stopped');
       for (let i = 0; i < statuses.length; i++) {
         if (statuses[i] === 'pending') {
           statuses[i] = 'stopped';
@@ -313,12 +329,7 @@ export default function CampaignDetailsDialog({
       }
     }
   
-    campaign.recipients.forEach((recipient: any, idx: number) => {
-      if (recipient.status && recipient.status !== 'pending' && statuses[idx] !== 'stopped') {
-        statuses[idx] = recipient.status === 'not_exist' ? 'not_exist' : recipient.status;
-      }
-    });
-  
+    console.log('Final statuses:', statuses);
     return statuses;
   }, []);
 
@@ -347,6 +358,9 @@ export default function CampaignDetailsDialog({
   
         if (data.status && data.message) {
           const detailedCampaign = data.message;
+          
+          console.log('Backend returned campaign data:', detailedCampaign);
+          console.log('Campaign status from backend:', detailedCampaign.status);
   
           const newDelayRange = campaign?.delayRange || detailedCampaign.delayRange || { start: 1, end: 1 };
   
@@ -367,12 +381,33 @@ export default function CampaignDetailsDialog({
           }
   
           const statuses = updateRecipientStatuses(detailedCampaign);
-          setRecipientStatuses(statuses);
+          console.log('Campaign status:', detailedCampaign.status);
+          console.log('Updated recipient statuses:', statuses);
+          
+          // If the campaign is stopped but backend doesn't reflect it, force the status
+          if (isStopped && detailedCampaign.status !== 'stopped') {
+            console.log('Campaign is stopped but backend shows different status, forcing stopped status');
+            const forcedStatuses = statuses.map(status => status === 'pending' ? 'stopped' : status);
+            setRecipientStatuses(forcedStatuses);
+          } else if (isPaused && detailedCampaign.status !== 'paused') {
+            console.log('Campaign is paused but backend shows different status, forcing paused status');
+            setRecipientStatuses(statuses);
+          } else {
+            setRecipientStatuses(statuses);
+          }
   
           setIsPaused(detailedCampaign.status === 'paused');
           setIsStopped(detailedCampaign.status === 'stopped');
           setIsProcessing(detailedCampaign.status === 'processing');
           
+          // Ensure paused state is maintained if backend doesn't reflect it
+          if (isPaused && detailedCampaign.status !== 'paused') {
+            console.log('Forcing paused state in UI even though backend shows:', detailedCampaign.status);
+            setIsPaused(true);
+            setIsProcessing(false);
+            setIsStopped(false);
+          }
+  
           if (!hasLoadedDetailsRef.current) {
             hasLoadedDetailsRef.current = true;
           }
@@ -396,7 +431,7 @@ export default function CampaignDetailsDialog({
     } finally {
       setIsLoadingDetails(false);
     }
-  }, [token, updateRecipientStatuses, campaign?.delayRange]);
+  }, [token, updateRecipientStatuses, campaign?.delayRange, isStopped, isPaused]);
 
   useEffect(() => {
     if (campaign && open && !hasLoadedDetailsRef.current) {
@@ -422,6 +457,12 @@ export default function CampaignDetailsDialog({
       lastProgressUpdateRef.current = now;
 
       console.log('Campaign progress update:', data);
+
+      // Ignore progress updates during control actions to prevent state conflicts
+      if (controlStates.isStopping || controlStates.isPausing || controlStates.isResuming) {
+        console.log('Ignoring progress update during control action');
+        return;
+      }
 
       setCampaignData((prev) =>
         prev
@@ -483,7 +524,7 @@ export default function CampaignDetailsDialog({
         setControlStates({ isStopping: false, isPausing: false, isResuming: false });
       }
     },
-    [campaignData, loadCampaignDetails]
+    [campaignData, loadCampaignDetails, controlStates]
   );
 
   const handleCampaignComplete = useCallback(
@@ -670,8 +711,12 @@ export default function CampaignDetailsDialog({
     async (action: 'stop' | 'pause' | 'resume') => {
       if (!campaignData) return;
 
+      console.log(`Campaign control action: ${action}`);
+      console.log('Current campaign data:', campaignData);
+
       // Prevent multiple simultaneous control actions
       if (controlStates.isStopping || controlStates.isPausing || controlStates.isResuming) {
+        console.log('Control action blocked - another action in progress');
         return;
       }
 
@@ -688,6 +733,8 @@ export default function CampaignDetailsDialog({
         isPausing: action === 'pause',
         isResuming: action === 'resume'
       }));
+
+      console.log('Control states updated for action:', action);
 
       // Optimistically update UI
       if (action === 'stop') {
@@ -713,15 +760,23 @@ export default function CampaignDetailsDialog({
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-        const payload = {
-          campaignId: campaignData._id,
-          action,
-          ...(action === 'resume' && { delayRange }),
-        };
+        let endpoint = '';
+        if (action === 'pause') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/pause';
+        } else if (action === 'stop') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/stop';
+        } else if (action === 'resume') {
+          endpoint = 'https://whatsapp.recuperafly.com/api/campaign/resume';
+        } else {
+          endpoint = 'https://whatsapp.recuperafly.com/api/template/campaign/control';
+        }
+        
+        const payload = { campaignId: campaignData._id };
+        
+        console.log(`Sending ${action} request to:`, endpoint);
+        console.log('Payload:', payload);
 
-        console.log('Sending campaign control payload:', payload);
-
-        const response = await fetch('https://whatsapp.recuperafly.com/api/template/campaign/control', {
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${authToken}`,
@@ -734,6 +789,8 @@ export default function CampaignDetailsDialog({
         clearTimeout(timeoutId);
         const result = await response.json();
 
+        console.log(`${action} API response:`, result);
+
         if (result.status) {
           console.log(`Campaign ${action} signal sent successfully`);
           if (action === 'resume') {
@@ -743,6 +800,11 @@ export default function CampaignDetailsDialog({
                 : null
             );
           }
+          
+          // Add a small delay to prevent immediate progress updates from overriding the state
+          setTimeout(() => {
+            setControlStates({ isStopping: false, isPausing: false, isResuming: false });
+          }, 1000);
         } else {
           console.error(`Campaign ${action} failed:`, result.message);
           // Revert UI state if server request failed
@@ -762,6 +824,7 @@ export default function CampaignDetailsDialog({
             setIsStopped(false);
             setCampaignData((prev) => (prev ? { ...prev, status: 'paused' } : null));
           }
+          setControlStates({ isStopping: false, isPausing: false, isResuming: false });
         }
       } catch (error) {
         console.error(`Error ${action}ing campaign:`, error);
@@ -782,8 +845,6 @@ export default function CampaignDetailsDialog({
           setIsStopped(false);
           setCampaignData((prev) => (prev ? { ...prev, status: 'paused' } : null));
         }
-      } finally {
-        // Reset control states
         setControlStates({ isStopping: false, isPausing: false, isResuming: false });
       }
     },
@@ -792,7 +853,24 @@ export default function CampaignDetailsDialog({
 
   const handleStopCampaign = useCallback(() => handleCampaignControl('stop'), [handleCampaignControl]);
   const handlePauseCampaign = useCallback(() => handleCampaignControl('pause'), [handleCampaignControl]);
-  const handleResumeCampaign = useCallback(() => handleCampaignControl('resume'), [handleCampaignControl]);
+  const handleResumeCampaign = useCallback(() => {
+    console.log('Resume button clicked');
+    console.log('Current campaign status:', campaignData?.status);
+    console.log('Control states:', controlStates);
+    console.log('Connection status:', connectionStatus);
+    
+    if (controlStates.isResuming) {
+      console.log('Already resuming, ignoring click');
+      return;
+    }
+    
+    if (connectionStatus.connectedCount === 0) {
+      console.log('Cannot resume: No instances connected');
+      return;
+    }
+    
+    handleCampaignControl('resume');
+  }, [handleCampaignControl, controlStates, connectionStatus]);
 
   // Cleanup on dialog close
   useEffect(() => {
@@ -907,7 +985,14 @@ export default function CampaignDetailsDialog({
   const failedCount = recipientStatuses.filter(status => status === 'failed').length;
   const notExistCount = recipientStatuses.filter(status => status === 'not_exist').length;
 
-  const canResume = isPaused && connectionStatus.connectedCount > 0;
+  const canResume = isPaused; // Temporarily allow resume when paused regardless of connection status
+  
+  console.log('Resume button state:', {
+    isPaused,
+    connectionStatus,
+    canResume,
+    controlStates
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

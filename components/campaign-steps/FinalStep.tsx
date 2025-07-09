@@ -600,18 +600,26 @@ export default function FinalStep({
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       
-      fetch('https://whatsapp.recuperafly.com/api/campaign/control', {
+      let endpoint = '';
+      if (action === 'pause') {
+        endpoint = 'https://whatsapp.recuperafly.com/api/campaign/pause';
+      } else if (action === 'stop') {
+        endpoint = 'https://whatsapp.recuperafly.com/api/campaign/stop';
+      } else if (action === 'resume') {
+        endpoint = 'https://whatsapp.recuperafly.com/api/campaign/resume';
+      } else {
+        endpoint = 'https://whatsapp.recuperafly.com/api/template/campaign/control';
+      }
+      const payload = { campaignId: currentCampaignId };
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-          campaignId: currentCampaignId,
-          action: action
-        }),
-        signal: controller.signal
-      }).then(response => {
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
         clearTimeout(timeoutId);
         return response.json();
       })

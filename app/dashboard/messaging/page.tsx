@@ -14,6 +14,7 @@ import CampaignFilters from '../../../components/CampaignFilters';
 import CampaignTable from '../../../components/CampaignTable';
 import CampaignDetailsDialog from '../../../components/CampaignDetailsDialog';
 import ToastContainer from '../../../components/ToastContainer';
+import { useSocket } from '../../../hooks/useSocket';
 
 // Types
 interface Template {
@@ -51,7 +52,7 @@ interface Campaign {
     name: string;
     messageType: string;
   };
-  instances: Instance[];
+  instanceCount: number;
   recipients: Recipient[];
   status: 'completed' | 'failed' | 'processing' | 'paused' | 'stopped';
   totalMessages: number;
@@ -102,6 +103,9 @@ export default function MessagingPage() {
 
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  const token = typeof window !== 'undefined' ? (Cookies.get('token') || localStorage.getItem('token')) : null;
+  const { on, off, isConnected } = useSocket({ token });
 
   // Check if we need to refresh data (coming from campaign completion)
   useEffect(() => {
@@ -232,48 +236,6 @@ export default function MessagingPage() {
     }
   
     try {
-      let allInstances: Instance[] = [];
-      let page = 0;
-      const limit = 10;
-  
-      // Fetch instances with pagination and connected status filter
-      while (true) {
-        const instanceResponse = await fetch('https://whatsapp.recuperafly.com/api/instance/all', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            page,
-            limit,
-            instance_status: 'connected', // Add filter for connected instances
-          }),
-        });
-  
-        if (instanceResponse.status === 401) {
-          handleUnauthorized();
-          return;
-        }
-  
-        const instanceData = await instanceResponse.json();
-        if (instanceData.status) {
-          const fetchedInstances = instanceData.instances || [];
-          allInstances = [...allInstances, ...fetchedInstances];
-          console.log('Fetched instances:', fetchedInstances); // Debug
-          if (fetchedInstances.length < limit || allInstances.length >= instanceData.total) {
-            break;
-          }
-          page++;
-        } else {
-          showToast(instanceData.message || 'Failed to fetch instances', 'error');
-          break;
-        }
-      }
-  
-      setInstances(allInstances);
-      console.log('All connected instances:', allInstances); // Debug
-  
       // Fetch campaigns (unchanged)
       const campaignResponse = await fetch('https://whatsapp.recuperafly.com/api/template/message/all', {
         method: 'POST',
@@ -288,12 +250,12 @@ export default function MessagingPage() {
           status: statusFilter === 'all' ? undefined : statusFilter,
         }),
       });
-  
+
       if (campaignResponse.status === 401) {
         handleUnauthorized();
         return;
       }
-  
+
       const campaignData = await campaignResponse.json();
       if (campaignData.status) {
         const mappedCampaigns: Campaign[] = campaignData.messages.map((msg: any) => ({
@@ -304,9 +266,8 @@ export default function MessagingPage() {
             name: msg.templateId?.name || 'Unknown Template',
             messageType: msg.templateId?.messageType || 'Text',
           },
-          instances: (msg.instanceIds || [])
-            .map((id: string) => allInstances.find((inst: Instance) => inst._id === id))
-            .filter((inst: Instance | undefined) => inst !== undefined),
+          // Only store the count of instanceIds
+          instanceCount: (msg.instanceIds || []).length,
           recipients: (msg.recipients || []).map((rec: any) => ({
             phone: rec.phone,
             name: rec.name,
@@ -317,20 +278,19 @@ export default function MessagingPage() {
           sentMessages: msg.statistics?.sent || 0,
           failedMessages: msg.statistics?.failed || 0,
           createdAt: msg.createdAt,
-          // Fix: Ensure delayRange always has a default value
           delayRange: msg.delayRange || { start: 3, end: 5 },
         }));
-  
+
         setCampaigns(mappedCampaigns);
         setTotalCampaigns(campaignData.total || 0);
-  
+
         const stats = {
           total: campaignData.total || 0,
           completed: mappedCampaigns.filter(c => c.status === 'completed').length,
           failed: mappedCampaigns.filter(c => c.status === 'failed').length,
           processing: mappedCampaigns.filter(c => c.status === 'processing').length,
         };
-  
+
         setCampaignStats(stats);
       } else {
         showToast(campaignData.message || 'Failed to fetch campaigns', 'error');
@@ -362,6 +322,64 @@ export default function MessagingPage() {
       return () => clearInterval(interval);
     }
   }, [campaigns, fetchData]);
+
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const handleCampaignProgress = (data: any) => {
+      handleCampaignUpdate({
+        ...data.campaign,
+        status: data.status,
+        sentMessages: data.sent || 0,
+        failedMessages: data.failed || 0,
+        totalMessages: data.total || 0,
+      });
+    };
+
+    const handleCampaignComplete = (data: any) => {
+      handleCampaignUpdate({
+        ...data.campaign,
+        status: 'completed',
+        sentMessages: data.sent || 0,
+        failedMessages: data.failed || 0,
+      });
+    };
+
+    const handleCampaignStopped = (data: any) => {
+      handleCampaignUpdate({
+        ...data.campaign,
+        status: 'stopped',
+      });
+    };
+
+    const handleCampaignPaused = (data: any) => {
+      handleCampaignUpdate({
+        ...data.campaign,
+        status: 'paused',
+      });
+    };
+
+    const handleCampaignResumed = (data: any) => {
+      handleCampaignUpdate({
+        ...data.campaign,
+        status: 'processing',
+      });
+    };
+
+    on('campaign.progress', handleCampaignProgress);
+    on('campaign.complete', handleCampaignComplete);
+    on('campaign.stopped', handleCampaignStopped);
+    on('campaign.paused', handleCampaignPaused);
+    on('campaign.resumed', handleCampaignResumed);
+
+    return () => {
+      off('campaign.progress', handleCampaignProgress);
+      off('campaign.complete', handleCampaignComplete);
+      off('campaign.stopped', handleCampaignStopped);
+      off('campaign.paused', handleCampaignPaused);
+      off('campaign.resumed', handleCampaignResumed);
+    };
+  }, [isConnected, on, off, handleCampaignUpdate]);
 
   // Manual refresh function
   const handleRefresh = async () => {

@@ -39,6 +39,7 @@ export const useCampaignDetails = (campaign: Campaign | null, open: boolean, tok
 
     let index = 0;
 
+    // First, mark sent/failed/not_exist recipients
     for (let i = 0; i < sentCount && index < statuses.length; i++, index++) {
       statuses[index] = 'sent';
     }
@@ -51,6 +52,14 @@ export const useCampaignDetails = (campaign: Campaign | null, open: boolean, tok
       statuses[index] = 'not_exist';
     }
 
+    // Check individual recipient statuses from backend
+    campaign.recipients.forEach((recipient: any, idx: number) => {
+      if (recipient.status && recipient.status !== 'pending') {
+        statuses[idx] = recipient.status === 'not_exist' ? 'not_exist' : recipient.status;
+      }
+    });
+
+    // If campaign is stopped, mark all remaining pending recipients as stopped
     if (campaign.status === 'stopped') {
       for (let i = 0; i < statuses.length; i++) {
         if (statuses[i] === 'pending') {
